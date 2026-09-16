@@ -846,31 +846,24 @@ def split_mode_keyboard() -> InlineKeyboardMarkup:
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
-    """The workflow menu shown after cards are loaded (with Back/Home)."""
+    """The workflow menu shown after cards are loaded."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔍 Filter BIN",  callback_data=CB_FILTER),
-                InlineKeyboardButton(text="✂️ Split",        callback_data=CB_SPLIT),
+                InlineKeyboardButton(text="🔍 Filter BIN", callback_data=CB_FILTER),
+                InlineKeyboardButton(text="✂️ Split",       callback_data=CB_SPLIT),
             ],
             [
-                InlineKeyboardButton(text="🔀 Mix",         callback_data=CB_MIX),
-                InlineKeyboardButton(text="🔄 Combine",     callback_data=CB_COMBINE),
+                InlineKeyboardButton(text="🔀 Mix",        callback_data=CB_MIX),
+                InlineKeyboardButton(text="🔄 Combine",    callback_data=CB_COMBINE),
             ],
             [
-                InlineKeyboardButton(text="🎨 Format",      callback_data=CB_FORMAT),
-                InlineKeyboardButton(text="🧹 Clean",       callback_data=CB_CLEAN),
+                InlineKeyboardButton(text="🎨 Format",     callback_data=CB_FORMAT),
+                InlineKeyboardButton(text="🧹 Clean",      callback_data=CB_CLEAN),
             ],
             [
-                InlineKeyboardButton(text="✏️ Rename File", callback_data=CB_RENAME),
-                InlineKeyboardButton(text="📊 Stats",       callback_data=CB_NAV_STATS),
-            ],
-            [
-                InlineKeyboardButton(text="⬅️ Back",        callback_data=CB_NAV_BACK),
-                InlineKeyboardButton(text="🏠 Home",         callback_data=CB_NAV_HOME),
-            ],
-            [
-                InlineKeyboardButton(text="🗑️ Close",       callback_data=CB_CLOSE),
+                InlineKeyboardButton(text="✏️ Rename",     callback_data=CB_RENAME),
+                InlineKeyboardButton(text="🏠 Home",       callback_data=CB_NAV_HOME),
             ],
         ]
     )
@@ -881,15 +874,15 @@ action_keyboard = main_menu_keyboard
 
 
 def hub_keyboard(uid: int) -> InlineKeyboardMarkup:
-    """The /start feature hub keyboard."""
+    """The /start feature hub keyboard — compact 2-column layout."""
     rows = [
         [
-            InlineKeyboardButton(text="📤 How to send cards", callback_data=CB_NAV_HELP),
-            InlineKeyboardButton(text="🧰 Tools Menu",        callback_data=CB_NAV_TOOLS),
+            InlineKeyboardButton(text="📂 Card Tools", callback_data=CB_NAV_MENU),
+            InlineKeyboardButton(text="🧰 Extra Tools", callback_data=CB_NAV_TOOLS),
         ],
         [
-            InlineKeyboardButton(text="📊 My Stats",          callback_data=CB_NAV_STATS),
-            InlineKeyboardButton(text="❓ Help",               callback_data=CB_NAV_HELP),
+            InlineKeyboardButton(text="📊 My Stats",  callback_data=CB_NAV_STATS),
+            InlineKeyboardButton(text="❓ Help",       callback_data=CB_NAV_HELP),
         ],
     ]
     if is_admin(uid):
@@ -904,20 +897,19 @@ def tools_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔎 BIN Lookup",   callback_data=CB_TOOL_BIN),
-                InlineKeyboardButton(text="🛰️ Proxy Check",  callback_data=CB_TOOL_PROXY),
+                InlineKeyboardButton(text="🔎 BIN Lookup",  callback_data=CB_TOOL_BIN),
+                InlineKeyboardButton(text="🛰️ Proxy Check", callback_data=CB_TOOL_PROXY),
             ],
             [
-                InlineKeyboardButton(text="🕸️ CC Scraper",   callback_data=CB_TOOL_SCR),
-                InlineKeyboardButton(text="✉️ Feedback",     callback_data=CB_TOOL_FEEDBACK),
+                InlineKeyboardButton(text="🕸️ CC Scraper",  callback_data=CB_TOOL_SCR),
+                InlineKeyboardButton(text="✉️ Feedback",    callback_data=CB_TOOL_FEEDBACK),
             ],
             [
-                InlineKeyboardButton(text="🆔 My ID",        callback_data=CB_TOOL_MYID),
-                InlineKeyboardButton(text="📝 Register",     callback_data=CB_TOOL_REGISTER),
+                InlineKeyboardButton(text="🆔 My ID",       callback_data=CB_TOOL_MYID),
+                InlineKeyboardButton(text="📝 Register",    callback_data=CB_TOOL_REGISTER),
             ],
             [
-                InlineKeyboardButton(text="⬅️ Back",         callback_data=CB_NAV_BACK),
-                InlineKeyboardButton(text="🏠 Home",          callback_data=CB_NAV_HOME),
+                InlineKeyboardButton(text="🏠 Home",        callback_data=CB_NAV_HOME),
             ],
         ]
     )
@@ -935,15 +927,13 @@ def combine_keyboard() -> InlineKeyboardMarkup:
 
 
 def success_caption(count: int, filename: str | None = None) -> str:
-    file_line = f"📄 <b>{html.escape(filename)}</b>\n" if filename else ""
+    file_line = f"📄 {html.escape(filename)}\n" if filename else ""
     return (
-        f"╔══════════════╗\n"
-        f"║  ✅  CARDS LOADED     ║\n"
-        f"╚══════════════╝\n\n"
+        f"✅ <b>Cards loaded</b>\n"
+        f"└───────────────────\n"
         f"{file_line}"
-        f"💳 <b>{count:,}</b> cards cleaned & ready\n\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"🏠 <b>MAIN MENU</b> — pick an action:"
+        f"💳 <b>{count:,}</b> cards ready\n\n"
+        f"👇 Pick an action:"
     )
 
 
@@ -1590,44 +1580,25 @@ async def cmd_joininfo(message: Message) -> None:
 # ─── Feature Hub / Help / Tools / Stats text ────────────────────────────────────
 
 def feature_hub_text(uid: int) -> str:
-    """The /start landing screen — a catalogue of everything the bot can do."""
+    """The /start landing screen — clean and minimal."""
     role = role_label(uid)
     return (
-        "👋 <b>Card Tool Bot</b>\n"
-        f"🔐 Status: <b>{role}</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "📄 <b>How to start</b>\n"
-        "Send a <b>.txt</b> file with card lines, e.g.\n"
-        "<code>4111111111111111|12|28|123</code>\n"
-        "<i>(spaces, colons and / are also accepted)</i>\n\n"
-        "🧰 <b>FEATURES</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "<b>📂 Card Management</b>  <i>(after you send cards)</i>\n"
-        "  🔍 Filter BIN   ·  ✂️ Split\n"
-        "  🔀 Mix   ·  🔄 Combine\n"
-        "  🎨 Format   ·  🧹 Clean\n"
-        "  ✏️ Rename File\n\n"
-        "<b>🌐 Lookup &amp; Tools</b>\n"
-        "  🔎 BIN Lookup   ·  🛰️ Proxy Checker\n"
-        "  🕸️ CC Scraper\n\n"
-        "<b>💬 Support</b>\n"
-        "  ✉️ Feedback   ·  🆔 My ID   ·  📝 Register\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "👇 Tap a button below to begin."
+        "💳 <b>Card Tool Bot</b>\n"
+        f"┌ Status: <b>{role}</b>\n"
+        "└───────────────────\n\n"
+        "📤 Send a <b>.txt</b> file to get started\n"
+        "<code>4111111111111111|12|28|123</code>\n\n"
+        "👇 Or pick a tool below."
     )
 
 
 def tools_menu_text() -> str:
     return (
-        "🧰 <b>TOOLS MENU</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "🔎 <b>BIN Lookup</b> — check any 6–8 digit BIN\n"
-        "🛰️ <b>Proxy Checker</b> — test an HTTP/SOCKS proxy\n"
-        "🕸️ <b>CC Scraper</b> — scrape CC from channels\n"
-        "✉️ <b>Feedback</b> — send a message to the admin\n"
-        "🆔 <b>My ID</b> — show your Telegram user ID\n"
-        "📝 <b>Register</b> — request bot access\n"
-        "━━━━━━━━━━━━━━━━\n"
+        "🧰 <b>Extra Tools</b>\n"
+        "└───────────────────\n\n"
+        "🔎 BIN Lookup  ·  🛰️ Proxy Checker\n"
+        "🕸️ CC Scraper  ·  ✉️ Feedback\n"
+        "🆔 My ID  ·  📝 Register\n\n"
         "👇 Pick a tool."
     )
 
@@ -1670,7 +1641,7 @@ def help_text(uid: int) -> str:
 
 
 def dashboard_text(uid: int) -> str:
-    """A small personal dashboard for the /start hub."""
+    """A small personal dashboard."""
     role = role_label(uid)
     hist = USER_HISTORY.get(uid) or []
     files = len(hist)
@@ -1679,14 +1650,13 @@ def dashboard_text(uid: int) -> str:
     if hist:
         last_rec = hist[-1]
         if isinstance(last_rec, dict):
-            last = f"\n🕒 Last file: <b>{html.escape(str(last_rec.get('file', '—')))}</b> ({last_rec.get('count', 0):,} cards)"
+            last = f"\n🕒 Last: <b>{html.escape(str(last_rec.get('file', '—')))}</b> ({last_rec.get('count', 0):,})"
     return (
-        "📊 <b>My Stats</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
-        f"🔐 Role: <b>{role}</b>\n"
-        f"🆔 ID: <code>{uid}</code>\n"
-        f"📁 Files processed: <b>{files:,}</b>\n"
-        f"💳 Cards seen: <b>{total_cards:,}</b>"
+        f"📊 <b>My Stats</b>\n"
+        f"┌ Role: <b>{role}</b>\n"
+        f"├ ID: <code>{uid}</code>\n"
+        f"├ Files: <b>{files:,}</b>\n"
+        f"└ Cards: <b>{total_cards:,}</b>"
         f"{last}"
     )
 
