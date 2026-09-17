@@ -1901,10 +1901,20 @@ async def cb_nav_tools(call: CallbackQuery) -> None:
 async def cb_nav_menu(call: CallbackQuery, state: FSMContext) -> None:
     uid = call.from_user.id
     cards = await get_cards(uid, state)
-    if not cards:
-        await call.answer("⚠️ No cards loaded — send a .txt first.", show_alert=True)
-        return await _safe_edit(call, feature_hub_text(uid), hub_keyboard(uid))
     await call.answer()
+    if not cards:
+        return await _safe_edit(
+            call,
+            "📂 <b>Card Tools</b>\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "📤 Upload a <b>.txt</b> file to get started\n"
+            "<code>4111111111111111|12|28|123</code>\n"
+            "<i>( | : / space separators all work )</i>\n\n"
+            "⬆️ Send the file here and the action menu will appear.",
+            InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🏠 Home", callback_data=CB_NAV_HOME),
+            ]]),
+        )
     await _safe_edit(call, success_caption(len(cards)), main_menu_keyboard())
 
 
@@ -2754,7 +2764,8 @@ async def cmd_scr(message: Message, bot: Bot) -> None:
             "⚠️ <b>Syntax:</b>\n"
             "<code>/scr @channel</code>\n"
             "<code>/scr @channel 3000</code>\n"
-            "<code>/scr https://t.me/channel 5000</code>\n\n"
+            "<code>/scr https://t.me/channel 5000</code>\n"
+            "<code>/scr @some_bot</code>  — scrape a bot's PM history\n\n"
             f"🔒 Your limit: <b>{limit_hint}</b> cards",
             parse_mode=ParseMode.HTML,
         )
@@ -2818,6 +2829,40 @@ async def cmd_scr(message: Message, bot: Bot) -> None:
             client = TelegramClient(StringSession(SCR_SESSION), API_ID, API_HASH)
             await client.start()
 
+            # ── Resolve entity (channel / group / user / bot) ──────────────
+            try:
+                entity = await client.get_entity(channel)
+            except Exception as resolve_err:
+                return await wait_msg.edit_text(
+                    f"❌ <b>Cannot resolve target:</b> <code>{_he(channel)}</code>\n"
+                    f"<i>{_he(str(resolve_err)[:200])}</i>\n\n"
+                    "• Channel/group: make sure the userbot has joined\n"
+                    "• Bot: make sure the userbot has started a chat with it first",
+                    parse_mode=ParseMode.HTML,
+                )
+
+            is_bot_entity = getattr(entity, "bot", False)
+            is_user_entity = hasattr(entity, "first_name") and not getattr(entity, "megagroup", False)
+
+            # For bots: send /start first so the conversation exists
+            if is_bot_entity:
+                try:
+                    await client.send_message(entity, "/start")
+                    await asyncio.sleep(1.5)
+                except Exception:
+                    pass  # already started or restricted — carry on
+
+            target_type = "🤖 Bot" if is_bot_entity else ("👤 User" if is_user_entity else "📢 Channel/Group")
+            try:
+                await wait_msg.edit_text(
+                    f"🔍 <b>Scraping</b> <code>{_he(channel)}</code>  {target_type}\n"
+                    f"🎯 Target: <b>{limit:,}</b> cards\n"
+                    f"<code>{render_bar(0)}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
             all_cards:    list[str] = []
             seen:         set[str]  = set()
             msgs_scanned  = 0
@@ -2875,7 +2920,7 @@ async def cmd_scr(message: Message, bot: Bot) -> None:
                         if not client.is_connected():
                             await client.connect()
                         batch = await client.get_messages(
-                            channel,
+                            entity,
                             limit=_SCR_BATCH,
                             offset_id=offset_id,
                         )
@@ -2976,7 +3021,7 @@ async def cmd_scr(message: Message, bot: Bot) -> None:
                     pct = min(100, int(len(all_cards) / limit * 100)) if limit else 0
                     try:
                         await wait_msg.edit_text(
-                            f"🔍 <b>Scraping</b> <code>{_he(channel)}</code>\n"
+                            f"🔍 <b>Scraping</b> <code>{_he(channel)}</code>  {target_type}\n"
                             f"💳 Found : <b>{len(all_cards):,}</b> / <b>{limit:,}</b>\n"
                             f"📨 Scanned: <b>{msgs_scanned:,}</b> msgs\n"
                             f"📦 Parts sent: <b>{chunk_number}</b>\n"
@@ -2997,16 +3042,21 @@ async def cmd_scr(message: Message, bot: Bot) -> None:
             await _flush(force=True)
 
             if not all_cards:
+                hint = (
+                    "Make sure the userbot has <b>started a chat</b> with this bot first."
+                    if is_bot_entity else
+                    "Make sure the userbot has <b>joined</b> this channel/group."
+                )
                 return await wait_msg.edit_text(
-                    f"😔 No cards found in <code>{_he(channel)}</code>.\n"
-                    f"📨 Scanned <b>{msgs_scanned:,}</b> messages.\n"
-                    "Make sure the Userbot has joined this channel.",
+                    f"😔 No cards found in <code>{_he(channel)}</code>  {target_type}\n"
+                    f"📨 Scanned <b>{msgs_scanned:,}</b> messages.\n\n"
+                    f"ℹ️ {hint}",
                     parse_mode=ParseMode.HTML,
                 )
 
             await wait_msg.edit_text(
                 f"✅ <b>Scrape Complete</b>\n"
-                f"📡 Channel : <code>{_he(channel)}</code>\n"
+                f"📡 Target  : <code>{_he(channel)}</code>  {target_type}\n"
                 f"💳 Total   : <b>{len(all_cards[:limit]):,}</b> cards\n"
                 f"📦 Files   : <b>{chunk_number}</b> parts\n"
                 f"📨 Scanned : <b>{msgs_scanned:,}</b> messages",
