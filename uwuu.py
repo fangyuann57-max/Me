@@ -170,7 +170,7 @@ async def _scr_send_document(
             await asyncio.sleep(1.5 * (attempt + 1))
     return False
 
-BOT_TOKEN = (os.getenv("BOT_TOKEN") or "8831264954:AAHuB36acFu3MOmR6W9iVxPCx14FDXt57KA").strip()
+BOT_TOKEN = (os.getenv("BOT_TOKEN") or "8714885475:AAE6R6SR7nLckEIBd1oVEs1FT1uwIVjNEDE").strip()
 ACCESS_DENIED = (
     "🔒 <b>Access Denied</b>\n\n"
     "This bot is for <b>Admin / VIP</b> access only.\n"
