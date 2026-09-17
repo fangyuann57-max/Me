@@ -10,7 +10,7 @@ Features: clean/extract, SPLIT (by count/brand/country), FILTER BIN,
 MIX, COMBINE, FORMAT, CLEAN (CC|MM|YY|CVC only), Admin/VIP lock, progress bar,
 rate-limit guard, auto-backup, broadcast, user history, ban/unban, feedback,
 file rename, usage stats dashboard, BIN lookup, proxy checker,
-card extrapolator (/extrap), card interpolator (/inter), CC scraper (/scr).
+CC scraper (/scr). UI: /start feature hub, inline navigation with Back/Home.
 """
 
 from __future__ import annotations
@@ -477,6 +477,22 @@ CB_COMBINE_DONE = "act:combine_done"
 CB_COMBINE_CANCEL = "act:combine_cancel"
 CB_RENAME    = "act:rename"
 
+# ── Navigation (hub / menus / back) ───────────────────────────────────────────
+CB_NAV_HOME  = "nav:home"     # feature catalog (shown by /start)
+CB_NAV_TOOLS = "nav:tools"    # command-free tools hub
+CB_NAV_MENU  = "nav:menu"     # main card workflow menu
+CB_NAV_BACK  = "nav:back"     # back to the previous screen
+CB_NAV_HELP  = "nav:help"     # help / how-to
+CB_NAV_STATS = "nav:stats"    # this user's stats
+
+# ── Tools-menu entry points (mirror the slash commands) ───────────────────────
+CB_TOOL_BIN     = "tool:bin"
+CB_TOOL_PROXY   = "tool:proxy"
+CB_TOOL_SCR     = "tool:scr"
+CB_TOOL_FEEDBACK= "tool:feedback"
+CB_TOOL_MYID    = "tool:myid"
+CB_TOOL_REGISTER= "tool:register"
+
 
 class SplitState(StatesGroup):
     waiting_lines = State()
@@ -494,6 +510,14 @@ class RenameState(StatesGroup):
 
 class FeedbackState(StatesGroup):
     waiting_text = State()
+
+
+class BinState(StatesGroup):
+    waiting_bin = State()
+
+
+class ProxyState(StatesGroup):
+    waiting_proxy = State()
 
 
 @dataclass
@@ -813,30 +837,79 @@ def split_mode_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🌍 By Country", callback_data=CB_SPLIT_COUNTRY),
             ],
+            [
+                InlineKeyboardButton(text="⬅️ Back", callback_data=CB_NAV_BACK),
+                InlineKeyboardButton(text="🏠 Home",  callback_data=CB_NAV_HOME),
+            ],
         ]
     )
 
 
-def action_keyboard() -> InlineKeyboardMarkup:
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """The workflow menu shown after cards are loaded."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔍 FILTER BIN",  callback_data=CB_FILTER),
+                InlineKeyboardButton(text="🔍 Filter BIN", callback_data=CB_FILTER),
+                InlineKeyboardButton(text="✂️ Split",       callback_data=CB_SPLIT),
             ],
             [
-                InlineKeyboardButton(text="✂️ SPLIT",   callback_data=CB_SPLIT),
-                InlineKeyboardButton(text="🔀 MIX",     callback_data=CB_MIX),
+                InlineKeyboardButton(text="🔀 Mix",        callback_data=CB_MIX),
+                InlineKeyboardButton(text="🔄 Combine",    callback_data=CB_COMBINE),
             ],
             [
-                InlineKeyboardButton(text="🔄 COMBINE", callback_data=CB_COMBINE),
-                InlineKeyboardButton(text="🎨 FORMAT",  callback_data=CB_FORMAT),
-                InlineKeyboardButton(text="🧹 CLEAN",   callback_data=CB_CLEAN),
+                InlineKeyboardButton(text="🎨 Format",     callback_data=CB_FORMAT),
+                InlineKeyboardButton(text="🧹 Clean",      callback_data=CB_CLEAN),
             ],
             [
-                InlineKeyboardButton(text="✏️ RENAME FILE", callback_data=CB_RENAME),
+                InlineKeyboardButton(text="✏️ Rename",     callback_data=CB_RENAME),
+                InlineKeyboardButton(text="🏠 Home",       callback_data=CB_NAV_HOME),
+            ],
+        ]
+    )
+
+
+# Backwards-compatible alias (older code paths call action_keyboard()).
+action_keyboard = main_menu_keyboard
+
+
+def hub_keyboard(uid: int) -> InlineKeyboardMarkup:
+    """The /start feature hub keyboard — compact 2-column layout."""
+    rows = [
+        [
+            InlineKeyboardButton(text="📂 Card Tools", callback_data=CB_NAV_MENU),
+            InlineKeyboardButton(text="🧰 Extra Tools", callback_data=CB_NAV_TOOLS),
+        ],
+        [
+            InlineKeyboardButton(text="📊 My Stats",  callback_data=CB_NAV_STATS),
+            InlineKeyboardButton(text="❓ Help",       callback_data=CB_NAV_HELP),
+        ],
+    ]
+    if is_admin(uid):
+        rows.append([
+            InlineKeyboardButton(text="👑 Admin Panel", callback_data="adm:panel"),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def tools_keyboard() -> InlineKeyboardMarkup:
+    """Command-free access to every non-card tool."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔎 BIN Lookup",  callback_data=CB_TOOL_BIN),
+                InlineKeyboardButton(text="🛰️ Proxy Check", callback_data=CB_TOOL_PROXY),
             ],
             [
-                InlineKeyboardButton(text="🗑️ CLOSE",   callback_data=CB_CLOSE),
+                InlineKeyboardButton(text="🕸️ CC Scraper",  callback_data=CB_TOOL_SCR),
+                InlineKeyboardButton(text="✉️ Feedback",    callback_data=CB_TOOL_FEEDBACK),
+            ],
+            [
+                InlineKeyboardButton(text="🆔 My ID",       callback_data=CB_TOOL_MYID),
+                InlineKeyboardButton(text="📝 Register",    callback_data=CB_TOOL_REGISTER),
+            ],
+            [
+                InlineKeyboardButton(text="🏠 Home",        callback_data=CB_NAV_HOME),
             ],
         ]
     )
@@ -853,14 +926,14 @@ def combine_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def success_caption(count: int) -> str:
+def success_caption(count: int, filename: str | None = None) -> str:
+    file_line = f"📄 {html.escape(filename)}\n" if filename else ""
     return (
-        f"╔══════════════╗\n"
-        f"║  ✅  CARDS LOADED     ║\n"
-        f"╚══════════════╝\n\n"
-        f"💳 <b>{count:,}</b> cards cleaned & ready\n\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"📌 Select an action below:"
+        f"✅ <b>Cards loaded</b>\n"
+        f"└───────────────────\n"
+        f"{file_line}"
+        f"💳 <b>{count:,}</b> cards ready\n\n"
+        f"👇 Pick an action:"
     )
 
 
@@ -1241,12 +1314,26 @@ async def enrich_bins(
     return result
 
 
+def result_nav_keyboard() -> InlineKeyboardMarkup:
+    """Buttons attached to a result file so the user can chain another action."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🏠 Main Menu", callback_data=CB_NAV_MENU),
+                InlineKeyboardButton(text="🧰 Tools",     callback_data=CB_NAV_TOOLS),
+            ],
+        ]
+    )
+
+
 async def send_result_file(
     target: Message | CallbackQuery,
     bot: Bot,
     lines: list[str],
     filename: str,
     caption: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     if not lines:
         if isinstance(target, CallbackQuery):
@@ -1256,16 +1343,27 @@ async def send_result_file(
         return
     doc = _make_txt_file(lines, filename)
     chat_id = target.message.chat.id if isinstance(target, CallbackQuery) else target.chat.id
-    await bot.send_document(chat_id, doc, caption=caption)
+    await bot.send_document(
+        chat_id, doc, caption=caption,
+        parse_mode=ParseMode.HTML,
+        reply_markup=reply_markup if reply_markup is not None else result_nav_keyboard(),
+    )
     if isinstance(target, CallbackQuery):
         await target.answer("✅ ပြီးပါပြီ")
 
 
-async def show_menu(message: Message, state: FSMContext, cards: list[str]) -> None:
+async def show_menu(
+    message: Message, state: FSMContext, cards: list[str],
+    filename: str | None = None,
+) -> None:
     uid = message.from_user.id if message.from_user else message.chat.id
     await state.set_state(None)
     await save_cards(uid, state, cards)
-    await message.answer(success_caption(len(cards)), reply_markup=action_keyboard())
+    await message.answer(
+        success_caption(len(cards), filename),
+        parse_mode=ParseMode.HTML,
+        reply_markup=action_keyboard(),
+    )
 
 
 # ─── Force Join Helpers ───────────────────────────────────────────────────────
@@ -1479,42 +1577,121 @@ async def cmd_joininfo(message: Message) -> None:
     )
 
 
+# ─── Feature Hub / Help / Tools / Stats text ────────────────────────────────────
+
+def feature_hub_text(uid: int) -> str:
+    """The /start landing screen — clean and minimal."""
+    role = role_label(uid)
+    return (
+        f"<b>Card Tool Bot</b>  ·  <b>{role}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "📂 <b>Upload a .txt file</b> to clean &amp; process cards\n"
+        "<code>4111111111111111|12|28|123</code>\n"
+        "<i>( | : / space separators all work )</i>\n\n"
+        "👇 Or pick a tool below."
+    )
+
+
+def tools_menu_text() -> str:
+    return (
+        "<b>Extra Tools</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "🔧 <b>Tools</b>\n"
+        "/bin <code>453201</code> — BIN lookup\n"
+        "/proxy <code>ip:port</code> — Proxy checker\n"
+        "/scr — Scrape cards from channels\n\n"
+        "💬 <b>Other</b>\n"
+        "/myid — Your Telegram ID\n"
+        "/feedback — Send feedback\n"
+        "/register — Request access\n\n"
+        "👇 Pick a tool."
+    )
+
+
+def help_text(uid: int) -> str:
+    role = role_label(uid)
+    body = (
+        "❓ <b>How to use Card Tool Bot</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"🔐 Status: <b>{role}</b>\n\n"
+        "<b>1️⃣ Send your cards</b>\n"
+        "Upload a <b>.txt</b> file containing one card per line:\n"
+        "<code>4111111111111111|12|28|123</code>\n\n"
+        "<b>2️⃣ Pick an action</b>\n"
+        "After the file is read you get a menu:\n"
+        "  🔍 Filter BIN — keep only one BIN\n"
+        "  ✂️ Split — by count / brand / country\n"
+        "  🔀 Mix — shuffle lines\n"
+        "  🔄 Combine — merge several files\n"
+        "  🎨 Format — normalise CC|MM|YY|CVC\n"
+        "  🧹 Clean — remove dupes &amp; expired\n"
+        "  ✏️ Rename — change the file name\n\n"
+        "<b>3️⃣ Standalone tools</b>\n"
+        "  🔎 /bin 453201 — BIN lookup\n"
+        "  🛰️ /proxy ip:port — proxy checker\n"
+        "  🕸️ /scr — CC scraper\n"
+        "  ✉️ /feedback — contact admin\n"
+        "  🆔 /myid — your user ID\n"
+        "  ⏹ /cancel — stop the current action"
+    )
+    if is_admin(uid):
+        body += (
+            "\n\n👑 <b>Admin</b>\n"
+            "  /adminpanel — inline admin panel\n"
+            "  /addvip · /delvip · /viplist\n"
+            "  /ban · /unban · /broadcast\n"
+            "  /usagestats · /access · /accessinfo"
+        )
+    return body
+
+
+def dashboard_text(uid: int) -> str:
+    """A small personal dashboard."""
+    role = role_label(uid)
+    hist = USER_HISTORY.get(uid) or []
+    files = len(hist)
+    total_cards = sum(int(h.get("count", 0)) for h in hist if isinstance(h, dict))
+    last = ""
+    if hist:
+        last_rec = hist[-1]
+        if isinstance(last_rec, dict):
+            last = f"\n🕒 Last: <b>{html.escape(str(last_rec.get('file', '—')))}</b> ({last_rec.get('count', 0):,})"
+    return (
+        f"📊 <b>My Stats</b>\n"
+        f"┌ Role: <b>{role}</b>\n"
+        f"├ ID: <code>{uid}</code>\n"
+        f"├ Files: <b>{files:,}</b>\n"
+        f"└ Cards: <b>{total_cards:,}</b>"
+        f"{last}"
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     uid = message.from_user.id
-    role = role_label(uid)
     if not can_use_bot(uid):
         return await message.answer(
             ACCESS_DENIED.format(uid=uid)
             + "\n\n📝 /register — Request access",
             parse_mode=ParseMode.HTML,
         )
-    admin_hint = "\n⚙️ /adminpanel — Admin Panel" if is_admin(uid) else ""
     await message.answer(
-        f"<b>Card Tool Bot</b>  ·  <b>{role}</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "📂 <b>Upload a .txt file</b> to clean &amp; process cards\n"
-        "<code>4111111111111111|12|28|123</code>\n"
-        "<i>( | : / space separators all work )</i>\n\n"
-        "🔧 <b>Tools</b>\n"
-        "/bin <code>453201</code> — BIN lookup\n"
-        "/proxy <code>ip:port</code> — Proxy checker\n"
-        "/scr — Scrape cards from channels\n"
-        "/extrap <code>&lt;card&gt;</code> — Card extrapolator\n"
-        "/inter <code>&lt;c1&gt; &lt;c2&gt;</code> — Interpolate between 2 cards\n\n"
-        "💬 <b>Other</b>\n"
-        "/myid — Your Telegram ID\n"
-        "/register — Request access\n"
-        "/feedback — Send feedback\n"
-        "/cancel — Stop current action"
-        f"{admin_hint}",
+        feature_hub_text(uid),
         parse_mode=ParseMode.HTML,
+        reply_markup=hub_keyboard(uid),
     )
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await cmd_start(message)
+    uid = message.from_user.id
+    if not can_use_bot(uid):
+        return await cmd_start(message)
+    await message.answer(
+        help_text(uid),
+        parse_mode=ParseMode.HTML,
+        reply_markup=hub_keyboard(uid),
+    )
 
 
 @router.message(Command("myid"))
@@ -1673,7 +1850,7 @@ async def on_document(message: Message, state: FSMContext, bot: Bot) -> None:
         _record_history(uid, fname, len(cards), message.from_user.username if message.from_user else None)
         _auto_backup(uid, cards, fname)
         await status.delete()
-        await show_menu(message, state, cards)
+        await show_menu(message, state, cards, fname)
     except ValueError as e:
         await status.edit_text(f"⚠️ {e}")
     except Exception:
@@ -1688,6 +1865,205 @@ async def cb_close(call: CallbackQuery) -> None:
         await call.message.delete()
     except Exception:
         await call.message.edit_reply_markup(reply_markup=None)
+
+
+# ─── Navigation handlers (hub ⇄ tools ⇄ menu ⇄ back) ───────────────────────────
+
+async def _safe_edit(call: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> None:
+    """Edit the current message in place, falling back to a fresh message."""
+    try:
+        await call.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except Exception:
+        try:
+            await call.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == CB_NAV_HOME)
+async def cb_nav_home(call: CallbackQuery) -> None:
+    uid = call.from_user.id
+    if not can_use_bot(uid):
+        return await call.answer("🚫 No access.", show_alert=True)
+    await call.answer()
+    await _safe_edit(call, feature_hub_text(uid), hub_keyboard(uid))
+
+
+@router.callback_query(F.data == CB_NAV_TOOLS)
+async def cb_nav_tools(call: CallbackQuery) -> None:
+    if not can_use_bot(call.from_user.id):
+        return await call.answer("🚫 No access.", show_alert=True)
+    await call.answer()
+    await _safe_edit(call, tools_menu_text(), tools_keyboard())
+
+
+@router.callback_query(F.data == CB_NAV_MENU)
+async def cb_nav_menu(call: CallbackQuery, state: FSMContext) -> None:
+    uid = call.from_user.id
+    cards = await get_cards(uid, state)
+    if not cards:
+        await call.answer("⚠️ No cards loaded — send a .txt first.", show_alert=True)
+        return await _safe_edit(call, feature_hub_text(uid), hub_keyboard(uid))
+    await call.answer()
+    await _safe_edit(call, success_caption(len(cards)), main_menu_keyboard())
+
+
+@router.callback_query(F.data == CB_NAV_BACK)
+async def cb_nav_back(call: CallbackQuery, state: FSMContext) -> None:
+    """Back = workflow menu if cards are loaded, otherwise the feature hub."""
+    uid = call.from_user.id
+    cards = await get_cards(uid, state)
+    await call.answer()
+    if cards:
+        await _safe_edit(call, success_caption(len(cards)), main_menu_keyboard())
+    else:
+        await _safe_edit(call, feature_hub_text(uid), hub_keyboard(uid))
+
+
+@router.callback_query(F.data == CB_NAV_HELP)
+async def cb_nav_help(call: CallbackQuery) -> None:
+    uid = call.from_user.id
+    await call.answer()
+    await _safe_edit(call, help_text(uid), hub_keyboard(uid))
+
+
+@router.callback_query(F.data == CB_NAV_STATS)
+async def cb_nav_stats(call: CallbackQuery) -> None:
+    uid = call.from_user.id
+    await call.answer()
+    await _safe_edit(call, dashboard_text(uid), hub_keyboard(uid))
+
+
+# ─── Tools-menu entry points ───────────────────────────────────────────────────
+
+@router.callback_query(F.data == CB_TOOL_BIN)
+async def cb_tool_bin(call: CallbackQuery, state: FSMContext) -> None:
+    if not can_use_bot(call.from_user.id):
+        return await call.answer("🚫 No access.", show_alert=True)
+    await state.set_state(BinState.waiting_bin)
+    await call.answer()
+    await call.message.answer("🔎 <b>BIN Lookup</b>\nSend a 6–8 digit BIN — <code>453201</code>", parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data == CB_TOOL_PROXY)
+async def cb_tool_proxy(call: CallbackQuery, state: FSMContext) -> None:
+    if not can_use_bot(call.from_user.id):
+        return await call.answer("🚫 No access.", show_alert=True)
+    await state.set_state(ProxyState.waiting_proxy)
+    await call.answer()
+    await call.message.answer(
+        "🛰️ <b>Proxy Checker</b>\nSend a proxy — <code>ip:port</code>\n"
+        "(or upload a .txt of proxies with caption <code>proxy</code>)",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.callback_query(F.data == CB_TOOL_FEEDBACK)
+async def cb_tool_feedback(call: CallbackQuery, state: FSMContext) -> None:
+    if not can_use_bot(call.from_user.id):
+        return await call.answer("🚫 No access.", show_alert=True)
+    await state.set_state(FeedbackState.waiting_text)
+    await call.answer()
+    await call.message.answer("💬 <b>Feedback</b>\nPlease type your message. ( /cancel to stop )", parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data == CB_TOOL_MYID)
+async def cb_tool_myid(call: CallbackQuery) -> None:
+    uid = call.from_user.id
+    await call.answer()
+    await call.message.answer(
+        f"🆔 <b>Your User ID</b>\n<code>{uid}</code>\n📄 <code>{uid}</code>\n"
+        "Send this ID to an admin to request access.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.callback_query(F.data == CB_TOOL_REGISTER)
+async def cb_tool_register(call: CallbackQuery, bot: Bot) -> None:
+    # Delegate to the existing /register flow.
+    await call.answer()
+    try:
+        await cmd_register(call.message)
+    except Exception:
+        logger.exception("tool_register")
+        await call.message.answer("⚠️ Could not open registration. Try /register")
+
+
+# ─── State handlers for hub-driven tools (typed input) ─────────────────────────
+
+@router.message(BinState.waiting_bin)
+async def bin_input_from_tool(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id
+    await state.set_state(None)
+    if not can_use_bot(uid):
+        return
+    raw = re.sub(r"[^\d]", "", message.text or "")[:8]
+    if len(raw) < 6:
+        return await message.answer(
+            "⚠️ Please send a 6–8 digit BIN — e.g. <code>453201</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    bin6 = raw[:6]
+    wait = await message.answer(
+        f"🔍 Looking up BIN <code>{bin6}</code>...", parse_mode=ParseMode.HTML
+    )
+    try:
+        info = await lookup_bin(bin6, get_http_session(), asyncio.Semaphore(1))
+        brand           = _he(info.get("brand", "UNKNOWN"))
+        country         = info.get("country", "UNKNOWN")
+        country_display = _he(info.get("country_display", country))
+        bank            = _he(info.get("bank", "UNKNOWN"))
+        tier            = _he(info.get("tier", "STANDARD"))
+        guessed_brand   = pan_guess_brand(bin6)
+        source = "🌐 API" if info.get("bank") not in ("UNKNOWN", "", None) else "🧠 Local/Guess"
+        flag = _country_flag(country)
+        await wait.edit_text(
+            f"🔍 <b>BIN Lookup — <code>{bin6}</code></b>\n\n"
+            f"💳 Brand:   <b>{brand}</b>  <i>(guess: {guessed_brand})</i>\n"
+            f"🏦 Bank:    <b>{bank}</b>\n"
+            f"🌍 Country: {flag} <b>{country_display}</b>\n"
+            f"💎 Tier:    <b>{tier}</b>\n"
+            f"📡 Source:  {source}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=hub_keyboard(uid),
+        )
+    except Exception:
+        logger.exception("bin_input_from_tool")
+        await wait.edit_text("⚠️ BIN lookup failed — Please try again later")
+
+
+@router.message(ProxyState.waiting_proxy)
+async def proxy_input_from_tool(message: Message, state: FSMContext, bot: Bot) -> None:
+    uid = message.from_user.id
+    await state.set_state(None)
+    if not can_use_bot(uid):
+        return
+    text = (message.text or "").strip()
+    proxy_list = _parse_proxy_text(text)
+    if not proxy_list:
+        return await message.answer(
+            "⚠️ Could not parse that proxy.\nExample: <code>1.2.3.4:8080</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    if len(proxy_list) > _PROXY_MAX_MANUAL:
+        proxy_list = proxy_list[:_PROXY_MAX_MANUAL]
+    await _check_proxy_batch(
+        message, bot, uid, proxy_list,
+        title="Proxy Check",
+        source_note=f"🧰 From tools menu — {len(proxy_list):,} proxies",
+    )
+
+
+@router.callback_query(F.data == CB_TOOL_SCR)
+async def cb_tool_scr(call: CallbackQuery) -> None:
+    if not can_use_bot(call.from_user.id):
+        return await call.answer("🚫 No access.", show_alert=True)
+    await call.answer()
+    try:
+        await cmd_scr(call.message)
+    except Exception:
+        logger.exception("tool_scr")
+        await call.message.answer("⚠️ Could not open the scraper. Try /scr")
 
 
 @router.callback_query(F.data == CB_MIX)
@@ -1754,10 +2130,10 @@ async def cb_split_menu(call: CallbackQuery, state: FSMContext) -> None:
     if not await require_cards(call, state):
         return
     await call.answer()
-    await call.message.answer(
+    await _safe_edit(
+        call,
         "✂️ <b>Advanced Split</b>\nChoose a split method:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=split_mode_keyboard(),
+        split_mode_keyboard(),
     )
 
 
@@ -2057,6 +2433,9 @@ def _admin_panel_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="💬 Feedbacks",   callback_data="adm:feedbacks"),
                 InlineKeyboardButton(text="❌ Close",        callback_data="adm:close"),
             ],
+            [
+                InlineKeyboardButton(text="🏠 Home",        callback_data=CB_NAV_HOME),
+            ],
         ]
     )
 
@@ -2093,6 +2472,23 @@ async def cb_admin_panel(call: CallbackQuery, bot: Bot) -> None:
             await call.message.delete()
         except Exception:
             pass
+        return
+
+    if action == "panel":
+        await call.answer()
+        mode  = "🔒 Private" if is_restricted() else "🌐 Public"
+        vip_c  = len(list_vip())
+        ban_c  = len(BANNED_IDS)
+        user_c = len(USER_HISTORY)
+        await _safe_edit(
+            call,
+            f"╔══════════════════════╗\n"
+            f"║  👑  ADMIN PANEL      ║\n"
+            f"╚══════════════════════╝\n\n"
+            f"🔐 Access: <b>{mode}</b>\n"
+            f"👥 Users: <b>{user_c}</b>  ·  ⭐ VIP: <b>{vip_c}</b>  ·  🚫 Banned: <b>{ban_c}</b>",
+            _admin_panel_keyboard(),
+        )
         return
 
     if action == "stats":
@@ -3750,8 +4146,6 @@ async def _register_commands(bot: Bot) -> None:
         BotCommand(command="myid",     description="Check your User ID"),
         BotCommand(command="cancel",   description="Cancel current action"),        
         BotCommand(command="feedback", description="Send feedback"),
-        BotCommand(command="extrap",   description="Card extrapolator"),
-        BotCommand(command="inter",    description="Interpolate between 2 live cards"),
         BotCommand(command="bin",      description="BIN lookup (6-8 digits)"),
         BotCommand(command="proxy",    description="Proxy checker (HTTP/SOCKS4/5)"),
         BotCommand(command="scr",      description="Scrape CC from channels"),
