@@ -184,6 +184,10 @@ FORCE_JOIN_FILE = Path(__file__).with_name("force_join.json")   # /setjoin comma
 # ── BIN lookup providers (all queried concurrently, first hit wins per field) ──
 # Trust order:  HandyAPI  >  Binlist.io  >  Binlist.net  >  Bincheck
 HANDYAPI_BIN_URL = "https://data.handyapi.com/bin/{bin}"        # free, no key
+# Optional: some HandyAPI docs show an x-api-key header for higher rate limits /
+# better reliability. If you register a free key, drop it in .env as
+# HANDYAPI_KEY=... and it will be sent automatically. Unset → unchanged (no header).
+HANDYAPI_KEY = os.getenv("HANDYAPI_KEY", "").strip()
 BINLIST_IO_URL   = "https://binlist.io/lookup/{bin}"            # free, no key — reliable
 BINLIST_URL      = "https://lookup.binlist.net/{bin}"           # legacy — often down
 BINCHECK_URL     = "https://api.bincheck.io/api/{bin}"          # free, no key needed
@@ -194,12 +198,15 @@ MAX_BIN_LOOKUPS_PER_JOB = 20_000   # a job may look up nearly every unique BIN.
                                    # whose BIN fell outside the first 500 into
                                    # the "Unknown" bucket, which is why Country
                                    # splits often showed 70%+ Unknown.)
-_BIN_LOOKUP_CONCURRENCY = 20       # parallel BIN lookups per job
+_BIN_LOOKUP_CONCURRENCY = 30       # ⚡ parallel BIN lookups per job (was 20 — I/O-bound, safe to raise)
 _BIN_RETRY_PASS = True             # after the first pass, retry every BIN that
                                    # came back unresolved (cheap — they are the
                                    # minority and often succeed on a 2nd try).
 BIN_CACHE_TTL_SEC = 86_400 * 30   # 30 days — re-fetch stale entries
-THREAD_POOL = ThreadPoolExecutor(max_workers=4)
+# ⚡ CPU-bound parsing (regex card extraction, extrapolation) scales with
+# available cores instead of a fixed 4 — helps when several users upload large
+# files at the same time. Capped at 8 so we don’t over-subscribe small hosts.
+THREAD_POOL = ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4) * 2))
 
 # Shared HTTP session — reused by every command instead of each one opening
 # its own connection pool. Created once in main() at startup, closed at
@@ -553,7 +560,7 @@ def pan_guess_brand(pan: str) -> str:
         return "UNKNOWN"
     if pan.startswith("4"):
         return "VISA"
-    if pan[:2] in ("51", "52", "53", "54", "55") or (len(pan) >= 4 and 2221 <= int(pan[:4]) <= 2720):
+    if pan[:2] in ("51", "52", "53", "54", "55") or (len(pan) >= 4 and pan[:4].isdigit() and 2221 <= int(pan[:4]) <= 2720):
         return "MASTERCARD"
     if pan[:2] in ("34", "37"):
         return "AMEX"
@@ -729,24 +736,24 @@ def _luhn_ok(num: str) -> bool:
 def _parse_cards_sync(text: str, luhn_check: bool = False) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for pattern in CC_PATTERNS:
-        for m in pattern.finditer(text):
-            num, mm, yy, cvc = m.group(1), m.group(2), m.group(3), m.group(4)
-            if luhn_check and not _luhn_ok(num):
-                continue
-            try:
-                mm_i = int(mm)
-            except ValueError:
-                continue
-            if mm_i < 1 or mm_i > 12:
-                continue
-            card = CardLine(number=num, month=str(mm_i), year=yy, cvc=cvc)
-            line = card.normalized(2)
-            if line not in seen:
-                seen.add(line)
-                out.append(line)
-            if len(out) >= MAX_FILE_LINES:
-                return out
+    # CC_PATTERNS has a single compiled pattern — no loop needed.
+    for m in CC_PATTERNS[0].finditer(text):
+        num, mm, yy, cvc = m.group(1), m.group(2), m.group(3), m.group(4)
+        if luhn_check and not _luhn_ok(num):
+            continue
+        try:
+            mm_i = int(mm)
+        except ValueError:
+            continue
+        if mm_i < 1 or mm_i > 12:
+            continue
+        card = CardLine(number=num, month=str(mm_i), year=yy, cvc=cvc)
+        line = card.normalized(2)
+        if line not in seen:
+            seen.add(line)
+            out.append(line)
+        if len(out) >= MAX_FILE_LINES:
+            return out
     return out
 
 
@@ -1112,7 +1119,9 @@ def _ensure_bin_meta(info: dict[str, str]) -> dict[str, str]:
     info.setdefault("brand", "UNKNOWN")
     info.setdefault("country", "UNKNOWN")
     info.setdefault("bank", "UNKNOWN")
-    info.setdefault("_ts", 0.0)
+    # Stale timestamp so unresolved entries get re-queried next call
+    # instead of being cached permanently as UNKNOWN in the same session.
+    info.setdefault("_ts", time.time() - BIN_CACHE_TTL_SEC - 1)
     return info
 
 
@@ -1134,10 +1143,20 @@ async def lookup_bin(
     sem: asyncio.Semaphore,
     force_refresh: bool = False,
     retries: int = 1,
+    query_bin: str | None = None,
 ) -> dict[str, str]:
     """Resolve one BIN. `force_refresh=True` skips cached/known-empty results so
     the caller can genuinely retry a previously-unresolved BIN. `retries` is the
-    per-API retry budget (the retry pass uses a higher value)."""
+    per-API retry budget (the retry pass uses a higher value).
+
+    `query_bin` (optional, 6–8 digits): when given, this longer prefix is sent to
+    the providers that document 8-digit IIN support (HandyAPI, Binlist.io) for a
+    more precise match, while caching/local-DB lookups still key off `bin6` so
+    the rest of the codebase (buckets, cache, formatting) is unaffected. This is
+    used by the retry pass in enrich_bins() to rescue BINs the 6-digit query
+    couldn’t resolve — a leading cause of an inflated “Unknown” bucket in Split by
+    Country. Falls back to `bin6` when not provided."""
+    qbin = query_bin or bin6
     # 0) Already-resolved cache hit (skipped when the caller wants a fresh try).
     if not force_refresh:
         cached = BIN_CACHE.get(bin6)
@@ -1177,9 +1196,11 @@ async def lookup_bin(
         # worst-case latency ကို sum(timeouts) မှ max(timeouts) အဖြစ်သို့ လျှော့ချသည်။
         # Merge priority (first non-empty value wins) — most-trusted first:
         #   HandyAPI > Binlist.io > Binlist.net > Bincheck
+        handyapi_headers = {"x-api-key": HANDYAPI_KEY} if HANDYAPI_KEY else {}
         p1, p2, p3, p4 = await asyncio.gather(
-            _fetch_json(session, HANDYAPI_BIN_URL.format(bin=bin6), retries=retries),
-            _fetch_json(session, BINLIST_IO_URL.format(bin=bin6), retries=retries),
+            _fetch_json(session, HANDYAPI_BIN_URL.format(bin=qbin),
+                        headers=handyapi_headers, retries=retries),
+            _fetch_json(session, BINLIST_IO_URL.format(bin=qbin), retries=retries),
             _fetch_json(session, BINLIST_URL.format(bin=bin6),
                         headers={"Accept-Version": "3"}, retries=retries),
             _fetch_json(session, BINCHECK_URL.format(bin=bin6), retries=retries),
@@ -1237,6 +1258,18 @@ async def enrich_bins(
         bins = bins[:MAX_BIN_LOOKUPS_PER_JOB]
     total = max(len(bins), 1)
 
+    # 🎯 One 6→8-digit prefix per 6-digit BIN, used only by the retry pass below.
+    # Card networks moved from 6- to 8-digit IIN ranges (ISO mandate, 2022), so a
+    # provider that couldn’t match a bare 6-digit prefix may still resolve the
+    # longer, more specific one. We still cache/bucket everything under the
+    # original 6-digit key (bin6) — this only changes what we ask the API for.
+    bin8_map: dict[str, str] = {}
+    for p in unique_pans:
+        if len(p) >= 6:
+            b6 = p[:6]
+            if b6 not in bin8_map and len(p) > 6:
+                bin8_map[b6] = p[:8]
+
     # 🚀 Concurrency (raised) — API calls are I/O bound.
     sem = asyncio.Semaphore(_BIN_LOOKUP_CONCURRENCY)
     result: dict[str, dict[str, str]] = {}
@@ -1252,7 +1285,8 @@ async def enrich_bins(
 
         if progress:
             # ⚡ Throttle UI updates to avoid Telegram flood limits.
-            if done_count % 5 == 0 or done_count == total:
+            _step = max(1, total // 20)  # ~every 5% of total BINs
+            if done_count % _step == 0 or done_count == total:
                 await progress.update(done_count, total, f"BIN {b}")
 
     session = get_http_session()
@@ -1262,7 +1296,8 @@ async def enrich_bins(
     if _BIN_RETRY_PASS:
         unresolved = [
             b for b in bins
-            if result.get(b, {}).get("country", "UNKNOWN") == "UNKNOWN"
+            if (result.get(b, {}).get("country", "UNKNOWN") in ("UNKNOWN", "N/A", "", "ZZ")
+                and result.get(b, {}).get("country_display", "UNKNOWN") in ("UNKNOWN", "N/A", "", "ZZ"))
         ]
         if unresolved and progress:
             await progress.update(
@@ -1276,9 +1311,16 @@ async def enrich_bins(
 
             async def _retry_one(b: str) -> None:
                 nonlocal retry_done
-                # Bypass the cache read so we actually hit the APIs again.
-                info = await lookup_bin(b, session, sem, force_refresh=True, retries=2)
-                if info.get("country", "UNKNOWN") != "UNKNOWN":
+                # Bypass the cache read so we actually hit the APIs again, and
+                # ask with the longer 6–8 digit prefix when we have one — more
+                # precise than the bare 6-digit BIN, which is why it can succeed
+                # where the first pass failed.
+                info = await lookup_bin(
+                    b, session, sem, force_refresh=True, retries=2,
+                    query_bin=bin8_map.get(b),
+                )
+                if (info.get("country", "UNKNOWN") not in ("UNKNOWN", "N/A", "", "ZZ")
+                        or info.get("country_display", "UNKNOWN") not in ("UNKNOWN", "N/A", "", "ZZ")):
                     result[b] = info
                 retry_done += 1
                 if progress and (retry_done % 5 == 0 or retry_done == len(unresolved)):
@@ -1379,18 +1421,46 @@ def _force_join_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-async def _check_member(bot: Bot, user_id: int) -> bool:
+# ⚡ Short-TTL cache for the force-join membership check. Without this, every
+# single message/callback from every non-admin user triggered a live
+# bot.get_chat_member() Telegram API call inside AccessMiddleware — i.e. one
+# network round-trip *per message*, adding real latency and risking Telegram
+# API rate limits under load. "Joined" results are cached longer (members
+# rarely leave mid-session); "not joined" is cached briefly so a user who just
+# joined and hits "Join ပြီးပြီ — စစ်ဆေးပါ" still gets an accurate answer quickly.
+_FORCE_JOIN_CACHE: dict[int, tuple[bool, float]] = {}
+_FORCE_JOIN_TTL_OK   = 600.0   # 10 min — confirmed member, skip re-checking Telegram
+_FORCE_JOIN_TTL_FAIL = 20.0    # 20s — not (yet) a member, recheck soon without hammering the API
+
+
+async def _check_member(bot: Bot, user_id: int, use_cache: bool = True) -> bool:
     """User သည် FORCE_JOIN_CHANNEL ၏ member ဟုတ်/မဟုတ် စစ်ဆေးသည်။
-    Channel မသတ်မှတ်ထားလျှင် (/setjoin မလုပ်ရသေးလျှင်) True ပြန်သည် — disabled."""
+    Channel မသတ်မှတ်ထားလျှင် (/setjoin မလုပ်ရသေးလျှင်) True ပြန်သည် — disabled.
+
+    `use_cache=False` forces a live re-check (used by the explicit "Join ပြီးပြီ —
+    စစ်ဆေးပါ" button so the user gets an immediate, accurate answer)."""
     if not FORCE_JOIN_CHANNEL:
         return True
+
+    now = time.monotonic()
+    if use_cache:
+        cached = _FORCE_JOIN_CACHE.get(user_id)
+        if cached is not None:
+            joined, ts = cached
+            ttl = _FORCE_JOIN_TTL_OK if joined else _FORCE_JOIN_TTL_FAIL
+            if (now - ts) < ttl:
+                return joined
+
     try:
         member = await bot.get_chat_member(FORCE_JOIN_CHANNEL, user_id)
-        return member.status not in ("left", "kicked", "banned")
+        joined = member.status not in ("left", "kicked", "banned")
     except Exception:
         # Bot ကို channel ထဲ Admin အဖြစ် ထည့်မထားလျှင် fail ဖြစ်နိုင် — block မလုပ်ဘဲ ဆက်ခွင့်ပြု
         logger.warning("force-join check failed for uid=%s — is the bot an admin of %s?", user_id, FORCE_JOIN_CHANNEL)
-        return True
+        joined = True
+
+    _FORCE_JOIN_CACHE[user_id] = (joined, now)
+    return joined
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1471,7 +1541,7 @@ class AccessMiddleware(BaseMiddleware):
 async def fj_check_callback(call: CallbackQuery, bot: Bot) -> None:
     """User က 'Join ပြီးပြီ' ကို နှိပ်လျှင် membership ပြန်စစ်ဆေးသည်"""
     uid = call.from_user.id
-    joined = await _check_member(bot, uid)
+    joined = await _check_member(bot, uid, use_cache=False)
     if joined:
         await call.message.edit_text(
             "✅ <b>Channel Join အောင်မြင်သည်!</b>\n\n"
@@ -1963,7 +2033,7 @@ async def cb_tool_proxy(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
     await call.message.answer(
         "🛰️ <b>Proxy Checker</b>\nSend a proxy — <code>ip:port</code>\n"
-        "(or upload a .txt of proxies with caption <code>proxy</code>)",
+        "(or upload a .txt of proxies — caption not required, or reply to a .txt/message with <code>/proxy</code>)",
         parse_mode=ParseMode.HTML,
     )
 
@@ -2042,12 +2112,86 @@ async def bin_input_from_tool(message: Message, state: FSMContext) -> None:
         await wait.edit_text("⚠️ BIN lookup failed — Please try again later")
 
 
+@router.message(ProxyState.waiting_proxy, F.document)
+async def proxy_file_from_tool(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Handle a .txt proxy file uploaded while inside the Tools → Proxy flow
+    (caption is optional here — unlike the standalone proxy_file_upload handler)."""
+    uid = message.from_user.id
+    await state.set_state(None)
+    if not can_use_bot(uid):
+        return
+    doc = message.document
+    name = (doc.file_name or "").lower()
+    if not name.endswith(".txt"):
+        return await message.answer("⚠️ Reply to / upload a .txt file to check its proxies.")
+    if doc.file_size and doc.file_size > _PROXY_FILE_LIMIT:
+        return await message.answer(
+            f"⚠️ File too large (limit {_PROXY_FILE_LIMIT // 1_000_000} MB)."
+        )
+    await message.answer("📥 Reading proxies from your file…")
+    tg_file = await bot.get_file(doc.file_id)
+    buf = io.BytesIO()
+    await bot.download_file(tg_file.file_path, buf)
+    raw_text = buf.getvalue().decode("utf-8", errors="ignore")
+    del buf
+    proxy_list = _parse_proxy_text(raw_text)
+    del raw_text
+    if not proxy_list:
+        return await message.answer("⚠️ No valid proxies found in that file.")
+    await _check_proxy_batch(
+        message, bot, uid, proxy_list,
+        title="Proxy Check",
+        source_note=f"📄 From tools menu file — {len(proxy_list):,} proxies (unlimited)",
+        unlimited=True,
+    )
+
+
 @router.message(ProxyState.waiting_proxy)
 async def proxy_input_from_tool(message: Message, state: FSMContext, bot: Bot) -> None:
     uid = message.from_user.id
     await state.set_state(None)
     if not can_use_bot(uid):
         return
+
+    # Reply to a .txt file (or a text message) while inside the Proxy tool
+    reply = message.reply_to_message
+    if not (message.text or "").strip() and reply is not None:
+        if reply.document:
+            name = (reply.document.file_name or "").lower()
+            if not name.endswith(".txt"):
+                return await message.answer("⚠️ Reply to a .txt file to check its proxies.")
+            if reply.document.file_size and reply.document.file_size > _PROXY_FILE_LIMIT:
+                return await message.answer(
+                    f"⚠️ File too large (limit {_PROXY_FILE_LIMIT // 1_000_000} MB)."
+                )
+            await message.answer("📥 Reading proxies from your file…")
+            tg_file = await bot.get_file(reply.document.file_id)
+            buf = io.BytesIO()
+            await bot.download_file(tg_file.file_path, buf)
+            raw_text = buf.getvalue().decode("utf-8", errors="ignore")
+            del buf
+            proxy_list = _parse_proxy_text(raw_text)
+            del raw_text
+            if not proxy_list:
+                return await message.answer("⚠️ No valid proxies found in that file.")
+            return await _check_proxy_batch(
+                message, bot, uid, proxy_list,
+                title="Proxy Check",
+                source_note=f"📄 From replied file — {len(proxy_list):,} proxies",
+                unlimited=True,
+            )
+        if reply.text:
+            proxy_list = _parse_proxy_text(reply.text)
+            if not proxy_list:
+                return await message.answer("⚠️ No valid proxies found in that message.")
+            if len(proxy_list) > _PROXY_MAX_MANUAL:
+                proxy_list = proxy_list[:_PROXY_MAX_MANUAL]
+            return await _check_proxy_batch(
+                message, bot, uid, proxy_list,
+                title="Proxy Check",
+                source_note=f"💬 From replied message — {len(proxy_list):,} proxies",
+            )
+
     text = (message.text or "").strip()
     proxy_list = _parse_proxy_text(text)
     if not proxy_list:
@@ -3252,7 +3396,9 @@ def _canonical_country(value: str) -> tuple[str, str]:
 
     if len(upper) == 2 and upper.isalpha():
         name = _A2_TO_COUNTRY.get(upper)
-        return (upper, name) if name else (upper, upper)
+        # For unmapped codes (e.g. XK/Kosovo), use raw title as display;
+        # the 2-letter code still renders a flag emoji correctly.
+        return (upper, name) if name else (upper, raw.title() if len(raw) > 2 else upper)
 
     a2 = _COUNTRY_TO_A2.get(upper)
     if a2:
@@ -3270,7 +3416,13 @@ def _bucket_cards_by_country(
     for line in cards:
         b6 = _pan_from_line(line)[:6]
         meta = bin_info.get(b6, {})
-        value = meta.get("country") or meta.get("country_display") or "UNKNOWN"
+        # "UNKNOWN" is truthy so plain `or` never reaches country_display.
+        # Skip sentinel values and fall through to the display name.
+        _UNKNOWN_SENTINELS = {"UNKNOWN", "N/A", "", "NONE", "ZZ", "XX"}
+        raw_country = (meta.get("country") or "").strip().upper()
+        if raw_country in _UNKNOWN_SENTINELS:
+            raw_country = (meta.get("country_display") or "").strip().upper()
+        value = raw_country if raw_country and raw_country not in _UNKNOWN_SENTINELS else "UNKNOWN"
         key = _canonical_country(value)
         buckets[key].append(line)
     return dict(buckets)
@@ -3698,13 +3850,14 @@ async def _memory_cleanup_loop() -> None:
             for uid in stale_rl:
                 RATE_LIMIT.pop(uid, None)
 
-            # 3) USER_CARDS / _PROXY_SESSIONS — remove inactive users
+            # 3) USER_CARDS / _PROXY_SESSIONS / _FORCE_JOIN_CACHE — remove inactive users
             inactive = [uid for uid, last in list(_USER_LAST_SEEN.items())
                         if (now - last) > _INACTIVE_EVICT_SEC]
             for uid in inactive:
                 USER_CARDS.pop(uid, None)
                 _PROXY_SESSIONS.pop(uid, None)
                 _USER_LAST_SEEN.pop(uid, None)
+                _FORCE_JOIN_CACHE.pop(uid, None)
 
             logger.debug(
                 "memory_cleanup: evicted %d BIN entries, %d rate-limit entries, %d inactive users",
@@ -3979,8 +4132,15 @@ async def _check_proxy_batch(
 
     connector = aiohttp.TCPConnector(limit=_PROXY_CONCURRENCY * 2, ttl_dns_cache=300)
     timeout_cfg = aiohttp.ClientTimeout(total=_PROXY_TIMEOUT * 2)
+    # ⚡ Stream in chunks of _PROXY_STREAM_CHUNK instead of scheduling every proxy
+    # at once. The semaphore already caps live network concurrency, but with a
+    # huge unlimited file (tens of thousands of proxies) materializing every
+    # task + its closure up front is needless peak memory for no speed benefit —
+    # this keeps memory flat while total throughput is unchanged.
     async with aiohttp.ClientSession(connector=connector, timeout=timeout_cfg) as sess:
-        await asyncio.gather(*[_one(sess, p) for p in proxy_list])
+        for i in range(0, len(proxy_list), _PROXY_STREAM_CHUNK):
+            chunk = proxy_list[i:i + _PROXY_STREAM_CHUNK]
+            await asyncio.gather(*[_one(sess, p) for p in chunk])
 
     # Fastest live proxies first.
     live.sort(key=lambda x: x[0])
